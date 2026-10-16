@@ -1,7 +1,24 @@
-import type { DatabaseError } from "pg";
+import { missedDeadlineCte } from "../job/job-accountability.service.js";
+import { canReadCurrentCandidateData } from "./application-privacy.js";
+import { getCandidateProfile } from "../candidate/candidate.service.js";
+import { getResumeMetadata } from "../resume/resume.service.js";
+import type { DatabaseError, Pool, PoolClient } from "pg";
 
 import { pool } from "../../config/database.js";
 import type { EmployerApplicationSearchInput, UpdateApplicationStatusInput, ScheduleInterviewInput, RescheduleInterviewInput, RespondToOfferInput } from "./application.schema.js";
+
+
+async function lockApplicationJob(client: PoolClient, applicationId: string) {
+    await client.query(`SELECT j.id FROM jobs j
+        WHERE j.id = (SELECT job_id FROM applications WHERE id = $1)
+        FOR UPDATE OF j`, [applicationId]);
+}
+async function lockInterviewJob(client: PoolClient, interviewId: string) {
+    await client.query(`SELECT j.id FROM jobs j
+        JOIN applications a ON a.job_id = j.id
+        JOIN interviews i ON i.application_id = a.id
+        WHERE i.id = $1 FOR UPDATE OF j`, [interviewId]);
+}
 
 export async function applyToJob(
     candidateId: string,
@@ -165,9 +182,10 @@ export async function getCandidateApplications(
 
 export async function getCandidateApplicationById(
     candidateId: string,
-    applicationId: string
+    applicationId: string,
+    db: Pool | PoolClient = pool
 ) {
-    const applicationResult = await pool.query(
+    const applicationResult = await db.query(
         `
             SELECT
                 a.id,
@@ -204,7 +222,7 @@ export async function getCandidateApplicationById(
         throw new Error("APPLICATION_NOT_FOUND");
     }
 
-    const eventsResult = await pool.query(
+    const eventsResult = await db.query(
         `
             SELECT
                 from_status,
@@ -218,7 +236,7 @@ export async function getCandidateApplicationById(
         [applicationId]
     );
 
-    const interviewsResult = await pool.query(
+    const interviewsResult = await db.query(
         `
         SELECT
             id,
@@ -420,7 +438,8 @@ type ApplicationStatus =
     | "offer_accepted"
     | "offer_declined"
     | "rejected"
-    | "withdrawn";
+    | "withdrawn"
+    | "job_cancelled";
 
 const employerTransitions: Record<
     ApplicationStatus,
@@ -456,6 +475,7 @@ const employerTransitions: Record<
     offer_declined: [],
     rejected: [],
     withdrawn: [],
+    job_cancelled: [],
 };
 
 function getApplicationStatusNotification(
@@ -523,6 +543,7 @@ export async function updateApplicationStatus(
 
     try {
         await client.query("BEGIN");
+        await lockApplicationJob(client, applicationId);
 
         const result = await client.query(
             `
@@ -533,7 +554,7 @@ export async function updateApplicationStatus(
                     a.candidate_id,
 
                     j.company_id,
-                    j.title AS job_title
+                    j.title AS job_title,
                     j.openings
 
                 FROM applications a
@@ -547,7 +568,7 @@ export async function updateApplicationStatus(
                 WHERE a.id = $1
                   AND cm.user_id = $2
 
-                FOR UPDATE
+                FOR UPDATE OF a
             `,
             [
                 applicationId,
@@ -604,6 +625,7 @@ export async function updateApplicationStatus(
 
         const updatedResult = await client.query(
             `
+                ${missedDeadlineCte('$3')}
                 UPDATE applications
                 SET
                     status = $1,
@@ -620,6 +642,7 @@ export async function updateApplicationStatus(
             [
                 newStatus,
                 applicationId,
+                application.job_id,
             ]
         );
 
@@ -701,13 +724,15 @@ export async function withdrawApplication(
 
     try {
         await client.query("BEGIN");
+        await lockApplicationJob(client, applicationId);
 
         const result = await client.query(
             `
                 SELECT
                     id,
                     status,
-                    candidate_id
+                    candidate_id,
+                    job_id
                 FROM applications
                 WHERE id = $1
                   AND candidate_id = $2
@@ -726,7 +751,7 @@ export async function withdrawApplication(
         }
 
         if (
-            ["offer", "rejected", "withdrawn"].includes(
+            ["offer", "offer_accepted", "offer_declined", "rejected", "withdrawn", "job_cancelled"].includes(
                 application.status
             )
         ) {
@@ -737,6 +762,7 @@ export async function withdrawApplication(
 
         const updatedResult = await client.query(
             `
+                ${missedDeadlineCte('$2')}
                 UPDATE applications
                 SET
                     status = 'withdrawn',
@@ -750,7 +776,7 @@ export async function withdrawApplication(
                     applied_at,
                     updated_at
             `,
-            [applicationId]
+            [applicationId, application.job_id]
         );
 
         await client.query(
@@ -839,7 +865,7 @@ export async function getEmployerFeedbackObligations(
                   'shortlisted',
                   'interview',
                   'final_review',
-                  'offer
+                  'offer'
               )
                   
 
@@ -892,6 +918,7 @@ export async function scheduleInterview(
 
     try {
         await client.query("BEGIN");
+        await lockApplicationJob(client, applicationId);
 
         const applicationResult =
             await client.query(
@@ -916,7 +943,7 @@ export async function scheduleInterview(
                     WHERE a.id = $1
                       AND cm.user_id = $2
 
-                    FOR UPDATE
+                    FOR UPDATE OF a
                 `,
                 [
                     applicationId,
@@ -938,6 +965,8 @@ export async function scheduleInterview(
                 "APPLICATION_NOT_IN_INTERVIEW_STAGE"
             );
         }
+
+        if (input.scheduledAt.getTime() <= Date.now()) throw new Error("INTERVIEW_TIME_PASSED");
 
         const interviewResult =
             await client.query(
@@ -1034,6 +1063,7 @@ export async function rescheduleInterview(
 
     try {
         await client.query("BEGIN");
+        await lockInterviewJob(client, interviewId);
 
         const interviewResult = await client.query(
             `
@@ -1047,6 +1077,7 @@ export async function rescheduleInterview(
                     i.notes,
                     i.status,
 
+                    a.status AS application_status,
                     a.candidate_id,
                     a.job_id,
 
@@ -1066,7 +1097,7 @@ export async function rescheduleInterview(
                 WHERE i.id = $1
                   AND cm.user_id = $2
 
-                FOR UPDATE
+                FOR UPDATE OF i, a
             `,
             [
                 interviewId,
@@ -1088,6 +1119,12 @@ export async function rescheduleInterview(
                 "INTERVIEW_CANCELLED"
             );
         }
+
+        if (interview.application_status !== "interview") {
+            throw new Error("APPLICATION_NOT_IN_INTERVIEW_STAGE");
+        }
+
+        if (input.scheduledAt.getTime() <= Date.now()) throw new Error("INTERVIEW_TIME_PASSED");
 
         const updatedResult = await client.query(
             `
@@ -1180,6 +1217,7 @@ export async function cancelInterview(
 
     try {
         await client.query("BEGIN");
+        await lockInterviewJob(client, interviewId);
 
         const result = await client.query(
             `
@@ -1207,7 +1245,7 @@ export async function cancelInterview(
                 WHERE i.id = $1
                   AND cm.user_id = $2
 
-                FOR UPDATE
+                FOR UPDATE OF i, a
             `,
             [
                 interviewId,
@@ -1308,6 +1346,7 @@ export async function respondToOffer(
 
     try {
         await client.query("BEGIN");
+        await lockApplicationJob(client, applicationId);
 
         const applicationResult = await client.query(
             `
@@ -1328,7 +1367,7 @@ export async function respondToOffer(
                 WHERE a.id = $1
                   AND a.candidate_id = $2
 
-                FOR UPDATE
+                FOR UPDATE OF a
             `,
             [
                 applicationId,
@@ -1353,6 +1392,7 @@ export async function respondToOffer(
 
         const updatedResult = await client.query(
             `
+                ${missedDeadlineCte('$3')}
                 UPDATE applications
                 SET
                     status = $1,
@@ -1369,6 +1409,7 @@ export async function respondToOffer(
             [
                 input.response,
                 applicationId,
+                application.job_id,
             ]
         );
 
@@ -1450,4 +1491,27 @@ export async function respondToOffer(
     } finally {
         client.release();
     }
+}
+
+export async function getEmployerApplicationById(employerId: string, applicationId: string) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const result = await client.query(`
+            SELECT a.candidate_id, a.status, u.first_name, u.last_name, u.email
+            FROM applications a JOIN jobs j ON j.id = a.job_id
+            JOIN company_members cm ON cm.company_id = j.company_id
+            JOIN users u ON u.id = a.candidate_id
+            WHERE a.id = $1 AND cm.user_id = $2 FOR SHARE OF a, cm`, [applicationId, employerId]);
+        const row = result.rows[0];
+        if (!row) throw new Error("APPLICATION_ACCESS_DENIED");
+        const application = await getCandidateApplicationById(row.candidate_id, applicationId, client);
+        const allowed = canReadCurrentCandidateData(row.status);
+        const profile = allowed ? await getCandidateProfile(row.candidate_id, client) : null;
+        const resume = allowed ? await getResumeMetadata(row.candidate_id, client) : null;
+        await client.query('COMMIT');
+        return { ...application, resume, candidate: { profile, id: row.candidate_id, firstName: row.first_name,
+            lastName: row.last_name, email: row.email } };
+    } catch (error) { await client.query('ROLLBACK'); throw error; }
+    finally { client.release(); }
 }

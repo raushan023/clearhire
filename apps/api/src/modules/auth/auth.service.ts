@@ -57,13 +57,15 @@ export async function registerUser(input: RegisterInput) {
             ]
         );
 
-        return result.rows[0];
+        const user = result.rows[0];
+        return { id: user.id, firstName: user.first_name, lastName: user.last_name,
+            email: user.email, role: user.role, createdAt: user.created_at };
     } catch (error) {
         const databaseError = error as DatabaseError;
 
         if (
             databaseError.code === "23505" &&
-            databaseError.constraint === "idx_users_email_lower_unique"
+            ["users_email_key", "idx_users_email_lower_unique"].includes(databaseError.constraint ?? "")
         ) {
             throw new Error("EMAIL_ALREADY_EXISTS");
         }

@@ -1,84 +1,24 @@
 import "dotenv/config";
-
-import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Pool } from "pg";
+import { applyMigrations } from "./migration-runner.js";
 
-import { pool } from "../config/database.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const migrationsDirectory = path.join(__dirname, "migrations");
-
-async function runMigrations() {
-    const client = await pool.connect();
-
-    try {
-        await client.query(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        id SERIAL PRIMARY KEY,
-        filename VARCHAR(255) NOT NULL UNIQUE,
-        executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-
-        const files = await fs.readdir(migrationsDirectory);
-
-        const migrationFiles = files
-            .filter((file) => file.endsWith(".sql"))
-            .sort();
-
-        for (const filename of migrationFiles) {
-            const migrationExists = await client.query(
-                `
-          SELECT 1
-          FROM schema_migrations
-          WHERE filename = $1
-        `,
-                [filename]
-            );
-
-            if (migrationExists.rowCount) {
-                console.log(`Skipping ${filename} (already applied)`);
-                continue;
-            }
-
-            console.log(`Running ${filename}...`);
-
-            const filePath = path.join(migrationsDirectory, filename);
-            const sql = await fs.readFile(filePath, "utf8");
-
-            await client.query("BEGIN");
-
-            try {
-                await client.query(sql);
-
-                await client.query(
-                    `
-            INSERT INTO schema_migrations (filename)
-            VALUES ($1)
-          `,
-                    [filename]
-                );
-
-                await client.query("COMMIT");
-
-                console.log(`Applied ${filename}`);
-            } catch (error) {
-                await client.query("ROLLBACK");
-                throw error;
-            }
-        }
-
-        console.log("Migrations completed successfully.");
-    } catch (error) {
-        console.error("Migration failed:", error);
-        process.exitCode = 1;
-    } finally {
-        client.release();
-        await pool.end();
-    }
+const rawUrl = process.env.DATABASE_URL;
+if (!rawUrl) throw new Error("DATABASE_URL (direct, non-pooled) is required for migrations");
+const url = new URL(rawUrl);
+if (url.hostname.includes('-pooler.')) throw new Error("Migrations require a direct database connection");
+if (url.hostname.endsWith('.neon.tech') || url.hostname.endsWith('.neon.com')) {
+    url.searchParams.set('sslmode', 'verify-full');
+    url.searchParams.delete('uselibpqcompat');
+} else if (!url.searchParams.has('sslmode')) {
+    url.searchParams.set('sslmode', ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? 'disable' : 'verify-full');
 }
-
-runMigrations();
+const pool = new Pool({ connectionString: url.toString(), max: 1, connectionTimeoutMillis: 10000 });
+try {
+    await applyMigrations(pool, path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations'));
+    console.log('Migrations completed successfully');
+} catch (error) {
+    console.error(error instanceof Error ? error.message : 'Migration failed');
+    process.exitCode = 1;
+} finally { await pool.end(); }

@@ -40,8 +40,8 @@ const jobFieldsSchema = z.object({
         .min(2)
         .max(100),
 
-    experienceMin: z.number().min(0),
-    experienceMax: z.number().min(0),
+    experienceMin: z.number().min(0).max(999.9).multipleOf(0.1),
+    experienceMax: z.number().min(0).max(999.9).multipleOf(0.1),
 
     salaryMin: z.number().int().nonnegative(),
     salaryMax: z.number().int().nonnegative(),
@@ -49,7 +49,7 @@ const jobFieldsSchema = z.object({
     salaryCurrency: z
         .string()
         .trim()
-        .length(3)
+        .regex(/^[A-Za-z]{3}$/, "Use a three-letter currency code")
         .transform((value) => value.toUpperCase()),
 
     salaryPeriod: z.enum([
@@ -58,7 +58,7 @@ const jobFieldsSchema = z.object({
         "yearly",
     ]),
 
-    openings: z.number().int().positive(),
+    openings: z.number().int().positive().max(2147483647),
 
     applicationDeadline: z.coerce.date(),
     decisionDeadline: z.coerce.date(),
@@ -142,6 +142,10 @@ export const updateJobSchema = jobFieldsSchema
     .omit({
         companyId: true,
     })
+    .extend({
+        preferredSkillIds: z.array(z.uuid()),
+        benefitIds: z.array(z.uuid()).refine(hasUniqueValues, "Benefits cannot contain duplicates"),
+    })
     .partial()
     .refine(
         (data) => Object.keys(data).length > 0,
@@ -207,10 +211,11 @@ export const jobSearchSchema = z.object({
             value
                 ? value
                     .split(",")
-                    .map((id) => id.trim())
+                    .map((id) => id.trim().toLowerCase())
                     .filter(Boolean)
                 : []
         )
+        .transform(ids => [...new Set(ids)])
         .refine(
             (ids) => ids.every((id) => z.uuid().safeParse(id).success),
             {
@@ -222,6 +227,7 @@ export const jobSearchSchema = z.object({
         .number()
         .int()
         .positive()
+        .max(1000000)
         .default(1),
 
     limit: z.coerce
@@ -252,6 +258,7 @@ export const employerJobSearchSchema = z.object({
         .number()
         .int()
         .positive()
+        .max(1000000)
         .default(1),
 
     limit: z.coerce

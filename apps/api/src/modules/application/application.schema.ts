@@ -13,6 +13,9 @@ export const employerApplicationSearchSchema = z.object({
             "interview",
             "final_review",
             "offer",
+            "offer_accepted",
+            "offer_declined",
+            "job_cancelled",
             "rejected",
             "withdrawn",
         ])
@@ -22,6 +25,7 @@ export const employerApplicationSearchSchema = z.object({
         .number()
         .int()
         .positive()
+        .max(1000000)
         .default(1),
 
     limit: z.coerce

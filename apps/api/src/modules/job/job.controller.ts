@@ -1,3 +1,4 @@
+import { respondToClientError } from "../../utils/client-error.js";
 import type { Response } from "express";
 
 import type { AuthenticatedRequest } from "../../middleware/auth.middleware.js";
@@ -35,6 +36,7 @@ export async function createJobController(
             job,
         });
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         if (
             error instanceof Error &&
             error.message === "COMPANY_ACCESS_DENIED"
@@ -81,6 +83,7 @@ export async function publishJobController(
             job,
         });
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         if (error instanceof Error) {
             if (error.message === "JOB_ACCESS_DENIED") {
                 return res.status(403).json({
@@ -157,12 +160,16 @@ export async function updateJobController(
             job,
         });
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         if (error instanceof Error) {
             switch (error.message) {
                 case "JOB_ACCESS_DENIED":
                     return res.status(403).json({
                         message: "You do not have access to this job",
                     });
+
+                case "OPENINGS_BELOW_OCCUPIED_CAPACITY":
+                    return res.status(409).json({ message: "Openings cannot be fewer than pending and accepted offers" });
 
                 case "JOB_NOT_EDITABLE":
                     return res.status(409).json({
@@ -250,6 +257,7 @@ export async function getJobController(
             job,
         });
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         if (error instanceof Error) {
             if (error.message === "JOB_NOT_FOUND") {
                 return res.status(404).json({
@@ -294,6 +302,7 @@ export async function searchJobsController(
 
         return res.status(200).json(result);
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         console.error("Job search failed:", error);
 
         return res.status(500).json({
@@ -331,6 +340,7 @@ export async function getEmployerJobsController(
 
         return res.status(200).json(result);
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         console.error(
             "Fetching employer jobs failed:",
             error
@@ -384,6 +394,7 @@ export async function updateJobStatusController(
             job,
         });
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         if (error instanceof Error) {
             switch (error.message) {
                 case "JOB_ACCESS_DENIED":
@@ -467,6 +478,7 @@ export async function cancelJobController(
             job,
         });
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         if (error instanceof Error) {
             switch (error.message) {
                 case "JOB_ACCESS_DENIED":
@@ -551,6 +563,7 @@ export async function repostJobController(
             job,
         });
     } catch (error) {
+        if (respondToClientError(error, res)) return;
         if (error instanceof Error) {
             switch (error.message) {
                 case "JOB_ACCESS_DENIED":

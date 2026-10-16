@@ -1,8 +1,12 @@
+import type { NotificationSearchInput } from "./notification.schema.js";
 import { pool } from "../../config/database.js";
 
 export async function getUserNotifications(
-    userId: string
+    userId: string,
+    input: NotificationSearchInput = { page: 1, limit: 20 }
 ) {
+    const { page, limit } = input;
+    const count = await pool.query("SELECT COUNT(*)::int AS total FROM notifications WHERE user_id = $1", [userId]);
     const result = await pool.query(
         `
             SELECT
@@ -16,13 +20,13 @@ export async function getUserNotifications(
                 created_at
             FROM notifications
             WHERE user_id = $1
-            ORDER BY created_at DESC
-            LIMIT 50
+            ORDER BY created_at DESC, id DESC
+            LIMIT $2 OFFSET $3
         `,
-        [userId]
+        [userId, limit, (page - 1) * limit]
     );
 
-    return result.rows.map((row) => ({
+    const notifications = result.rows.map((row) => ({
         id: row.id,
         type: row.type,
         title: row.title,
@@ -32,6 +36,8 @@ export async function getUserNotifications(
         readAt: row.read_at,
         createdAt: row.created_at,
     }));
+    const total = count.rows[0].total;
+    return { notifications, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
 }
 
 export async function markNotificationAsRead(

@@ -39,7 +39,8 @@ export async function createFeedbackReminders() {
                     'under_review',
                     'shortlisted',
                     'interview',
-                    'final_review'
+                    'final_review',
+                    'offer'
                 )
 
             GROUP BY
@@ -52,7 +53,7 @@ export async function createFeedbackReminders() {
                 job_id,
                 type
             )
-            WHERE type = 'feedback_overdue'
+            WHERE type IN ('feedback_overdue', 'feedback_overdue_24h', 'feedback_overdue_72h')
 
             DO NOTHING
 

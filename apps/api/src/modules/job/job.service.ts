@@ -1,3 +1,5 @@
+import { missedDeadlineValue } from "./job-accountability.service.js";
+import { protectActiveJobContent } from "./job-duplicate.service.js";
 import { pool } from "../../config/database.js";
 import type { PoolClient } from "pg";
 import { getCompanyMembership } from "../company/company.service.js";
@@ -174,7 +176,7 @@ export async function publishJob(
                 WHERE j.id = $1
                   AND cm.user_id = $2
 
-                FOR UPDATE
+                FOR UPDATE OF j
             `,
             [
                 jobId,
@@ -226,6 +228,8 @@ export async function publishJob(
                 "JOB_INCOMPLETE"
             );
         }
+
+        await protectActiveJobContent(client, jobId);
 
         const result = await client.query(
             `
@@ -358,7 +362,7 @@ export async function updateJob(
                     ON cm.company_id = j.company_id
                 WHERE j.id = $1
                   AND cm.user_id = $2
-                FOR UPDATE
+                FOR UPDATE OF j
             `,
             [jobId, userId]
         );
@@ -446,6 +450,14 @@ export async function updateJob(
         const openings =
             input.openings ?? job.openings;
 
+        if (job.status === "open" && input.openings !== undefined) {
+            const occupied = await client.query(
+                "SELECT COUNT(*)::int AS count FROM applications WHERE job_id = $1 AND status IN ('offer', 'offer_accepted')",
+                [jobId]
+            );
+            if (openings < occupied.rows[0].count) throw new Error("OPENINGS_BELOW_OCCUPIED_CAPACITY");
+        }
+
         const skillResult = await client.query(
             `
                 SELECT
@@ -531,6 +543,7 @@ export async function updateJob(
             `
                 UPDATE jobs
                 SET
+                    decision_deadline_missed_at = ${missedDeadlineValue},
                     title = $1,
                     description = $2,
                     employment_type = $3,
@@ -828,9 +841,21 @@ export async function updateJob(
                 );
             }
         }
+        if (job.status === "open") await protectActiveJobContent(client, jobId);
         await client.query("COMMIT");
 
-        return updatedJobResult.rows[0];
+        const updated = updatedJobResult.rows[0];
+        return {
+            id: updated.id, companyId: updated.company_id, title: updated.title,
+            description: updated.description, employmentType: updated.employment_type,
+            workMode: updated.work_mode, city: updated.city, state: updated.state, country: updated.country,
+            experienceMin: Number(updated.experience_min), experienceMax: Number(updated.experience_max),
+            salaryMin: Number(updated.salary_min), salaryMax: Number(updated.salary_max),
+            salaryCurrency: updated.salary_currency, salaryPeriod: updated.salary_period,
+            openings: updated.openings, status: updated.status,
+            applicationDeadline: updated.application_deadline, decisionDeadline: updated.decision_deadline,
+            createdAt: updated.created_at, updatedAt: updated.updated_at,
+        };
     } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -878,18 +903,13 @@ export async function getJobById(
     }
 
     if (job.status !== "open") {
-        if (userRole !== "employer") {
-            throw new Error("JOB_NOT_ACCESSIBLE");
-        }
-
-        const membership = await getCompanyMembership(
-            userId,
-            job.company_id
-        );
-
-        if (!membership) {
-            throw new Error("JOB_NOT_ACCESSIBLE");
-        }
+        const access = userRole === "employer"
+            ? await getCompanyMembership(userId, job.company_id)
+            : job.status !== "draft" && (await pool.query(
+                "SELECT 1 FROM applications WHERE job_id = $1 AND candidate_id = $2 UNION ALL SELECT 1 FROM saved_jobs WHERE job_id = $1 AND candidate_id = $2",
+                [jobId, userId]
+            )).rowCount;
+        if (!access) throw new Error("JOB_NOT_ACCESSIBLE");
     }
 
     const accountabilityResult = await pool.query(
@@ -956,7 +976,7 @@ export async function getJobById(
         [jobId]
     );
 
-    const benefits = benefitsResult.rows;
+    const benefits = benefitsResult.rows.map(benefit => ({ id: benefit.id, name: benefit.name }));
 
     const historyResult = await pool.query(
         `
@@ -1042,6 +1062,11 @@ export async function getJobById(
 
         applicationDeadline: job.application_deadline,
         decisionDeadline: job.decision_deadline,
+        applicationsClosedAt: job.applications_closed_at,
+        applicationsClosedBy: job.applications_closed_by,
+        cancelledAt: job.cancelled_at,
+        cancellationReason: job.cancellation_reason,
+        parentJobId: job.parent_job_id,
         accountability: {
             decisionDeadlineMissed:
                 Boolean(
@@ -1490,7 +1515,7 @@ export async function updateJobStatus(
         WHERE j.id = $1
           AND cm.user_id = $2
 
-        FOR UPDATE
+        FOR UPDATE OF j
     `,
             [
                 jobId,
@@ -1527,7 +1552,8 @@ export async function updateJobStatus(
                             'offer_accepted',
                             'offer_declined',
                             'rejected',
-                            'withdrawn'
+                            'withdrawn',
+                            'job_cancelled'
                         )
                     )::int AS unresolved_count,
 
@@ -1563,7 +1589,10 @@ export async function updateJobStatus(
             `
                 UPDATE jobs
                 SET
+                    decision_deadline_missed_at = ${missedDeadlineValue},
                     status = $1,
+                    applications_closed_at = CASE WHEN $1 = 'applications_closed' THEN NOW() ELSE applications_closed_at END,
+                    applications_closed_by = CASE WHEN $1 = 'applications_closed' THEN 'employer' ELSE applications_closed_by END,
                     updated_at = NOW()
                 WHERE id = $2
                 RETURNING
@@ -1655,7 +1684,7 @@ export async function cancelJob(
                 WHERE j.id = $1
                   AND cm.user_id = $2
 
-                FOR UPDATE
+                FOR UPDATE OF j
             `,
             [
                 jobId,
@@ -1703,6 +1732,7 @@ export async function cancelJob(
                 `
                     UPDATE jobs
                     SET
+                        decision_deadline_missed_at = ${missedDeadlineValue},
                         status = 'cancelled',
                         cancelled_at = NOW(),
                         cancelled_by = $1,
@@ -1749,6 +1779,19 @@ export async function cancelJob(
             const application
             of applicationsResult.rows
         ) {
+            const cancelledInterviews = await client.query(
+                `UPDATE interviews SET status = 'cancelled', cancelled_at = NOW(),
+                    cancelled_by = $1, updated_at = NOW()
+                 WHERE application_id = $2 AND status = 'scheduled' RETURNING id`,
+                [employerId, application.id]
+            );
+            for (const _interview of cancelledInterviews.rows) {
+                await client.query(
+                    `INSERT INTO notifications (user_id, type, title, message, job_id, application_id)
+                     VALUES ($1, 'interview_cancelled', 'Interview cancelled', $2, $3, $4)`,
+                    [application.candidate_id, `Your interview for ${job.title} was cancelled because the job was cancelled.`, jobId, application.id]
+                );
+            }
             await client.query(
                 `
                     UPDATE applications
@@ -1886,7 +1929,7 @@ export async function repostJob(
                 WHERE j.id = $1
                   AND cm.user_id = $2
 
-                FOR UPDATE
+                FOR UPDATE OF j
             `,
             [
                 jobId,

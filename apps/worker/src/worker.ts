@@ -25,6 +25,11 @@ const platformTimezone =
 
 const queue = new Queue(QUEUE_NAME, {
     connection: redisConnection,
+    defaultJobOptions: {
+        attempts: 3, backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: { age: 7 * 86400, count: 1000 },
+        removeOnFail: { age: 30 * 86400, count: 5000 },
+    },
 });
 
 async function setupSchedulers() {
@@ -157,7 +162,12 @@ worker.on("failed", (job, error) => {
     );
 });
 
-async function shutdown() {
+let stopping = false;
+async function shutdown(exitCode = 0) {
+    if (stopping) return;
+    stopping = true;
+    const timeout = setTimeout(() => { console.error("Worker shutdown timed out"); process.exit(1); }, 30000);
+    timeout.unref();
     console.log("Shutting down worker...");
 
     await worker.close();
@@ -166,19 +176,24 @@ async function shutdown() {
     await redisConnection.quit();
     await pool.end();
 
-    process.exit(0);
+    clearTimeout(timeout);
+    process.exitCode = exitCode;
 }
 
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+const stop = () => { void shutdown().catch(() => { console.error("Worker shutdown failed"); process.exit(1); }); };
+process.on("SIGTERM", stop);
+process.on("SIGINT", stop);
+worker.on("error", () => console.error("Worker connection or processing error"));
+queue.on("error", () => console.error("Queue connection error"));
+redisConnection.on("error", () => console.error("Redis connection error"));
 
 setupSchedulers().catch((error) => {
     console.error(
         "Failed to configure job scheduler:",
-        error
+        error instanceof Error ? error.name : "Unknown error"
     );
 
-    process.exit(1);
+    void shutdown(1).catch(() => process.exit(1));
 });
 
 console.log("ClearHire worker started");

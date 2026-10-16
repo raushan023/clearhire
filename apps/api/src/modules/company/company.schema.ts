@@ -11,6 +11,7 @@ export const createCompanySchema = z.object({
         .string()
         .trim()
         .url("Please provide a valid website URL")
+        .max(255)
         .optional(),
 
     description: z
@@ -23,3 +24,9 @@ export const createCompanySchema = z.object({
 export type CreateCompanyInput = z.infer<
     typeof createCompanySchema
 >;
+export const companyIdSchema = z.object({ companyId: z.uuid() });
+export const updateCompanySchema = createCompanySchema.extend({
+    website: z.url().max(255).nullable().optional(), description: z.string().trim().max(2000).nullable().optional(),
+}).partial().refine(input => Object.keys(input).length > 0, "At least one field is required");
+export type UpdateCompanyInput = z.infer<typeof updateCompanySchema>;
+export const addRecruiterSchema = z.object({ userId: z.uuid() });

@@ -43,10 +43,12 @@ export function authenticate(
     try {
         const payload = jwt.verify(
             token,
-            jwtSecret
+            jwtSecret,
+            { algorithms: ["HS256"] }
         ) as AuthTokenPayload;
 
-        if (!payload.sub || !payload.role) {
+        if (typeof payload.sub !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.sub) ||
+            !['candidate', 'employer'].includes(payload.role)) {
             return res.status(401).json({
                 message: "Invalid access token",
             });

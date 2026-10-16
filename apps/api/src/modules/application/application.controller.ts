@@ -4,7 +4,7 @@ import type { AuthenticatedRequest } from "../../middleware/auth.middleware.js";
 
 import { jobIdParamSchema } from "../job/job.schema.js";
 import {
-    applyToJob, getCandidateApplicationById,
+    getEmployerApplicationById, applyToJob, getCandidateApplicationById,
     getCandidateApplications,
     getEmployerJobApplications,
     updateApplicationStatus,
@@ -455,6 +455,9 @@ export async function scheduleInterviewController(
                             "You do not have access to this application",
                     });
 
+                case "INTERVIEW_TIME_PASSED":
+                    return res.status(409).json({ message: "Interview time must still be in the future" });
+
                 case "APPLICATION_NOT_IN_INTERVIEW_STAGE":
                     return res.status(409).json({
                         message:
@@ -525,6 +528,12 @@ export async function rescheduleInterviewController(
                         message:
                             "You do not have access to this interview",
                     });
+
+                case "INTERVIEW_TIME_PASSED":
+                    return res.status(409).json({ message: "Interview time must still be in the future" });
+
+                case "APPLICATION_NOT_IN_INTERVIEW_STAGE":
+                    return res.status(409).json({ message: "Only applications in the interview stage may have interviews rescheduled" });
 
                 case "INTERVIEW_CANCELLED":
                     return res.status(409).json({
@@ -686,5 +695,21 @@ export async function respondToOfferController(
             message:
                 "Internal server error",
         });
+    }
+}
+
+export async function getEmployerApplicationController(req: AuthenticatedRequest, res: Response) {
+    if (!req.user) return res.status(401).json({ message: "Authentication required" });
+    const params = applicationIdParamSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ message: "Invalid application ID" });
+    try {
+        const application = await getEmployerApplicationById(req.user.id, params.data.applicationId);
+        return res.json({ application });
+    } catch (error) {
+        if (error instanceof Error && error.message === "APPLICATION_ACCESS_DENIED") {
+            return res.status(403).json({ message: "You do not have access to this application" });
+        }
+        console.error("Fetching employer application failed");
+        return res.status(500).json({ message: "Internal server error" });
     }
 }

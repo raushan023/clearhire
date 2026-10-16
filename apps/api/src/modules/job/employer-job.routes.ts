@@ -1,9 +1,11 @@
+import { downloadApplicationResumeController } from "../resume/resume.controller.js";
 import { Router } from "express";
 
 import { authenticate } from "../../middleware/auth.middleware.js";
 import { authorizeRoles } from "../../middleware/role.middleware.js";
 import { getEmployerJobsController, updateJobStatusController, cancelJobController, repostJobController } from "./job.controller.js";
 import {
+    getEmployerApplicationController,
     getEmployerJobApplicationsController,
     updateApplicationStatusController,
     getEmployerFeedbackObligationsController,
@@ -83,5 +85,9 @@ router.post(
     authorizeRoles("employer"),
     repostJobController
 );
+
+router.get("/applications/:applicationId", authenticate, authorizeRoles("employer"), getEmployerApplicationController);
+
+router.get("/applications/:applicationId/resume", authenticate, authorizeRoles("employer"), downloadApplicationResumeController);
 
 export default router;

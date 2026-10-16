@@ -9,7 +9,7 @@ import {
 } from "./notification.service.js";
 
 import {
-    notificationIdParamSchema,
+    notificationIdParamSchema, notificationSearchSchema,
 } from "./notification.schema.js";
 
 export async function getNotificationsController(
@@ -22,13 +22,13 @@ export async function getNotificationsController(
         });
     }
 
+    const query = notificationSearchSchema.safeParse(req.query);
+    if (!query.success) return res.status(400).json({ message: "Invalid pagination", errors: query.error.flatten().fieldErrors });
     try {
-        const notifications =
-            await getUserNotifications(req.user.id);
+        const result =
+            await getUserNotifications(req.user.id, query.data);
 
-        return res.status(200).json({
-            notifications,
-        });
+        return res.status(200).json(result);
     } catch (error) {
         console.error(
             "Fetching notifications failed:",
