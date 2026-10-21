@@ -4,12 +4,14 @@ import type { AuthenticatedRequest } from "../../middleware/auth.middleware.js";
 import {
     loginSchema,
     registerSchema,
+    updateCurrentUserSchema,
 } from "./auth.schema.js";
 
 import {
     loginUser,
     registerUser,
-    getCurrentUser
+    getCurrentUser,
+    updateCurrentUser
 } from "./auth.service.js";
 
 export async function register(
@@ -118,5 +120,28 @@ export async function currentUser(
         return res.status(500).json({
             message: "Internal server error",
         });
+    }
+}
+
+export async function updateAccount(req: AuthenticatedRequest, res: Response) {
+    if (!req.user) return res.status(401).json({ message: "Authentication required" });
+    const result = updateCurrentUserSchema.safeParse(req.body);
+    if (!result.success) return res.status(400).json({
+        message: "Provide valid account fields: firstName, lastName, email, or phone",
+        errors: result.error.flatten().fieldErrors,
+    });
+    try {
+        const user = await updateCurrentUser(req.user.id, result.data);
+        return res.status(200).json({ user });
+    } catch (error) {
+        if (error instanceof Error && error.message === "EMAIL_ALREADY_EXISTS") {
+            return res.status(409).json({ message: "An account with this email already exists",
+                code: "EMAIL_ALREADY_EXISTS", errors: { email: ["An account with this email already exists"] } });
+        }
+        if (error instanceof Error && error.message === "USER_NOT_FOUND") {
+            return res.status(404).json({ message: "User not found" });
+        }
+        console.error("Update current user failed:", error);
+        return res.status(500).json({ message: "Internal server error" });
     }
 }

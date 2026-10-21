@@ -13,6 +13,7 @@
     "test:integration": "npm run test:integration --workspace=api",
     "check": "npm run typecheck && npm test",
     "dev:api": "npm run dev --workspace=api",
-    "dev:worker": "npm run dev --workspace=worker"
+    "dev:worker": "npm run dev --workspace=worker",
+    "dev:web": "npm run dev --workspace=web"
   }
 }

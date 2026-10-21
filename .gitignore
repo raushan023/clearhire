@@ -13,3 +13,6 @@ coverage/
 
 *.log
 npm-debug.log*
+# Local frontend browser-test artifacts
+apps/web/test-results/
+apps/web/playwright-report/

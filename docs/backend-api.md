@@ -4,6 +4,8 @@ All paths below require a Bearer access token. Candidate paths require candidate
 
 | Method | Path | Behavior |
 |---|---|---|
+| GET | `/api/auth/current-user` | Own account: `{ user: { id, role, firstName, lastName, email, phone, createdAt } }` |
+| PATCH | `/api/auth/current-user` | Both roles update their own account; same `{ user }` response |
 | GET | `/api/candidate/profile` | Own profile, or `{ profile: null }` before creation |
 | PATCH | `/api/candidate/profile` | Create/update own profile; returns `{ profile }` |
 | GET | `/api/candidate/saved-jobs?page=1&limit=20` | Own saved jobs with current job status and pagination |
@@ -49,3 +51,13 @@ Errors retain `{ message }`, with field validation optionally including `errors`
 `PATCH /api/jobs/:jobId` still returns `{ message, job }` with a flat camelCase job object: `id`, `companyId`, `title`, `description`, `employmentType`, `workMode`, `city`, `state`, `country`, `experienceMin`, `experienceMax`, `salaryMin`, `salaryMax`, `salaryCurrency`, `salaryPeriod`, `openings`, `status`, `applicationDeadline`, `decisionDeadline`, `createdAt`, `updatedAt`. It does not adopt the GET detail's nested relationships/accountability/history. Profile, resume metadata, company/member, saved-job, and employer-detail responses use curated camelCase fields; storage keys and raw database rows are not response contracts.
 
 Deadline accountability applies to `open`, `applications_closed`, and `hiring_in_progress` jobs with at least one unresolved application. The worker and authorized mutations record a missing marker using the deadline that was crossed. The API captures this from the pre-change state within the same SQL statement that overwrites a deadline, changes job status/cancels, or changes/resolves an application; the parent job lock serializes these operations. Existing markers never change. Future deadlines, drafts, terminal jobs, and jobs with no unresolved applications do not create a new marker. Terminal edits are rejected. Later extensions/resolution retain the historical marker. The 24/72-hour warning thresholds use that marker, so worker recovery can find multiple warning stages already due. Existing markers from earlier worker versions retain their original timestamp.
+
+## Account contact details
+
+`PATCH /api/auth/current-user` accepts only `firstName`, `lastName`, `email`, and `phone`. Identity always comes from the authenticated token, never request data or a target-user ID. Omitted fields remain unchanged. Empty bodies and unknown/protected fields (including `id`, `userId`, `role`, and `password`) return 400. The route uses the same authentication for candidates and employers; professional profiles and companies keep their existing endpoints.
+
+Names reuse registration validation: trimmed, nonempty, at most 100 characters. Email reuses registration/login normalization: trimmed, lowercase, valid address, at most 255 characters. Both existing email uniqueness constraints remain authoritative, including concurrent updates; conflicts return 409 with `code: "EMAIL_ALREADY_EXISTS"` and `errors.email`. Email changes take effect immediately for login. There is no email verification, refresh token, password change, or session revocation in this task.
+
+Phone is optional and nullable, trimmed, up to 64 characters with 3–20 digits, an optional leading `+`, spaces, parentheses, periods, hyphens, and slashes. Common international formatting is preserved; no country-specific or E.164 conversion is applied. `null` or a blank string clears the phone. Phone is not unique. GET current-user, successful PATCH, registration and login return camelCase user fields including nullable `phone`; password hashes remain private.
+
+New migration **025_add_user_phone.sql** adds only `users.phone VARCHAR(64)` with no default, backfill, or uniqueness constraint; existing accounts receive NULL. Historical migrations are unchanged. This migration has not been run against the development/Neon database. It must be applied before starting the updated API, because auth queries now select phone. The normal migration runner applies pending files in order and verifies existing checksums. A manual rollback dropping phone loses phone data and is not provided as a lossless rollback.

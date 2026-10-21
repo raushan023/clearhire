@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import type { DatabaseError } from "pg";
 
 import { pool } from "../../config/database.js";
-import type { RegisterInput, LoginInput } from "./auth.schema.js";
+import type { RegisterInput, LoginInput, UpdateCurrentUserInput } from "./auth.schema.js";
 
 export async function registerUser(input: RegisterInput) {
     const {
@@ -45,6 +45,7 @@ export async function registerUser(input: RegisterInput) {
                     first_name,
                     last_name,
                     email,
+                    phone,
                     role,
                     created_at
             `,
@@ -59,7 +60,7 @@ export async function registerUser(input: RegisterInput) {
 
         const user = result.rows[0];
         return { id: user.id, firstName: user.first_name, lastName: user.last_name,
-            email: user.email, role: user.role, createdAt: user.created_at };
+            email: user.email, phone: user.phone, role: user.role, createdAt: user.created_at };
     } catch (error) {
         const databaseError = error as DatabaseError;
 
@@ -84,6 +85,7 @@ export async function loginUser(input: LoginInput) {
                 first_name,
                 last_name,
                 email,
+                phone,
                 password_hash,
                 role,
                 created_at
@@ -132,6 +134,7 @@ export async function loginUser(input: LoginInput) {
             firstName: user.first_name,
             lastName: user.last_name,
             email: user.email,
+            phone: user.phone,
             role: user.role,
             createdAt: user.created_at,
         },
@@ -146,6 +149,7 @@ export async function getCurrentUser(userId: string) {
                 first_name,
                 last_name,
                 email,
+                phone,
                 role,
                 created_at
             FROM users
@@ -165,7 +169,38 @@ export async function getCurrentUser(userId: string) {
         firstName: user.first_name,
         lastName: user.last_name,
         email: user.email,
+        phone: user.phone,
         role: user.role,
         createdAt: user.created_at,
     };
+}
+
+export async function updateCurrentUser(userId: string, input: UpdateCurrentUserInput) {
+    const columns = { firstName: "first_name", lastName: "last_name", email: "email", phone: "phone" } as const;
+    const values: unknown[] = [];
+    const assignments: string[] = [];
+    for (const key of Object.keys(columns) as (keyof typeof columns)[]) {
+        if (input[key] !== undefined) {
+            values.push(input[key]);
+            assignments.push(`${columns[key]} = $${values.length}`);
+        }
+    }
+    if (!assignments.length) throw new Error("EMPTY_ACCOUNT_UPDATE");
+    values.push(userId);
+    try {
+        const result = await pool.query(`UPDATE users SET ${assignments.join(", ")}, updated_at = NOW()
+            WHERE id = $${values.length}
+            RETURNING id, first_name, last_name, email, phone, role, created_at`, values);
+        const user = result.rows[0];
+        if (!user) throw new Error("USER_NOT_FOUND");
+        return { id: user.id, firstName: user.first_name, lastName: user.last_name,
+            email: user.email, phone: user.phone, role: user.role, createdAt: user.created_at };
+    } catch (error) {
+        const databaseError = error as DatabaseError;
+        if (databaseError.code === "23505" &&
+            ["users_email_key", "idx_users_email_lower_unique"].includes(databaseError.constraint ?? "")) {
+            throw new Error("EMAIL_ALREADY_EXISTS");
+        }
+        throw error;
+    }
 }

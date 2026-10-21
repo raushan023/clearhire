@@ -56,6 +56,9 @@ test('PostgreSQL migration upgrade regression suite', { skip: !testUrl }, async 
         const tables = ['users', 'companies', 'company_members', 'jobs', 'applications', 'application_events', 'notifications'];
         const before = new Map<string, unknown>();
         for (const table of tables) before.set(table, (await scoped.query(`SELECT * FROM ${table} ORDER BY id`)).rows);
+        // The new nullable column must preserve all preexisting values.
+        const oldUsers = before.get('users') as Record<string, unknown>[];
+        before.set('users', oldUsers.map(user => ({ ...user, phone: null })));
         const old013 = (await scoped.query("SELECT id, filename, executed_at FROM schema_migrations WHERE filename LIKE '013_%'")).rows;
 
         await t.test('legacy 001–020 upgrades without rerunning 013 and preserves existing data', async () => {

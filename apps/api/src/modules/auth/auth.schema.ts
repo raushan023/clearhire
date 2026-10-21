@@ -43,3 +43,20 @@ export const loginSchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
+
+// Preserve international input formatting; blank input explicitly clears the optional phone.
+export const phoneSchema = z.string().trim().max(64)
+    .refine(value => value === "" || (/^\+?[0-9() .\/-]+$/.test(value) &&
+        value.replace(/\D/g, "").length >= 3 && value.replace(/\D/g, "").length <= 20),
+        "Enter a phone number using digits, an optional leading +, and common separators")
+    .transform(value => value || null).nullable();
+
+export const updateCurrentUserSchema = z.object({
+    firstName: registerSchema.shape.firstName.optional(),
+    lastName: registerSchema.shape.lastName.optional(),
+    email: registerSchema.shape.email.optional(),
+    phone: phoneSchema.optional(),
+}).strict().refine(value => Object.values(value).some(field => field !== undefined),
+    "Provide at least one account field");
+
+export type UpdateCurrentUserInput = z.infer<typeof updateCurrentUserSchema>;

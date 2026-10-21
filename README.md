@@ -1,6 +1,6 @@
 # ClearHire
 
-Transparent recruitment workflows using Express, TypeScript, PostgreSQL, and a separate BullMQ/Redis worker. Frontend implementation has not started.
+Transparent recruitment workflows using Express, TypeScript, PostgreSQL, a separate BullMQ/Redis worker, and a React/Vite web workspace.
 
 ## Requirements and setup
 
@@ -68,4 +68,27 @@ Resume storage is intentionally unconfigured. Valid uploads return 503 until a p
 
 Correction-pass policies: routes use explicit actions with normal Express HEAD/trailing-slash behavior. Closed-job saves return 409 (missing/draft jobs remain 404). Deadline edits and late application resolution preserve a missed-deadline marker before changing the evidence; new markers use the crossed deadline, and existing markers stay unchanged. Employers can read a candidate's current profile/resume only through an unresolved application. Historical application access retains the application/timeline, not live profile/resume access. No immutable application-time resume snapshot is stored.
 
-Local verification is required before Neon migration approval. This environment attempted `npm run check`, `npm run build`, and `npm run test:integration`; all failed before execution with `env: node: Bad CPU type in executable`. No typecheck, build, or test pass is claimed. See the implementation notes for the exact verification order and remaining storage/Redis checks.
+Database integration verification remains separate from source checks and is required before any Neon migration approval. The current frontend pass successfully ran workspace checks/builds and frontend browser tests; see [frontend verification](docs/frontend-implementation.md). Earlier backend runtime limitations are historical notes, not the current Node status. Private storage, Redis, and live database verification still require their own setup.
+
+## Web workspace
+
+The React/TypeScript frontend lives in `apps/web` and talks directly to the existing Express API. It uses React Router, TanStack Query, React Hook Form/Zod, and Tailwind CSS through its official Vite plugin. See [frontend implementation and review](docs/frontend-implementation.md) for routes, contracts, tests, and limitations.
+
+After `npm ci`, start the existing API and the web app in separate terminals:
+
+```sh
+npm run dev:api
+npm run dev:web
+```
+
+Vite prints the frontend development URL. The default public API base is `/api`, proxied to the existing local API on port 4000 during development. `apps/web/.env.example` documents `VITE_API_BASE_URL`; an absolute Express URL must include its `/api` prefix. No frontend environment file is required for the default local proxy. Never place database credentials or JWT signing secrets in Vite environment variables.
+
+```sh
+npm run typecheck --workspace=web
+npm test --workspace=web
+npm run build --workspace=web
+npm exec --workspace=web -- playwright install chromium
+npm run test:browser --workspace=web
+```
+
+Browser tests use a local Vite server and explicitly mocked API contracts, without database connections or real account credentials. `npm run check` includes frontend typechecks/unit tests, and `npm run build` includes the web production build. Browser tests are a separate explicit command. Frontend output is `apps/web/dist`. No hosting or deployment configuration was applied.

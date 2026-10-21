@@ -30,7 +30,7 @@ test('PostgreSQL backend regression suite', { skip: !testUrl }, async t => {
         await t.test('fresh bootstrap and repeated migration runs', async () => {
             await applyMigrations(db, migrations);
             const before = await db.query('SELECT filename FROM schema_migrations ORDER BY filename');
-            assert.equal(before.rowCount, 24);
+            assert.equal(before.rowCount, 25);
             await Promise.all([applyMigrations(db, migrations), applyMigrations(db, migrations)]);
             assert.deepEqual((await db.query('SELECT filename FROM schema_migrations ORDER BY filename')).rows, before.rows);
             assert.equal((await db.query("SELECT COUNT(*)::int AS n FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE 'idx_notifications_feedback%'", [schema])).rows[0].n, 1);
@@ -77,6 +77,53 @@ test('PostgreSQL backend regression suite', { skip: !testUrl }, async t => {
             await db.query('UPDATE applications SET status = $2 WHERE id = $1', [a.id, status]);
             return a;
         }
+        await t.test('shared current-user HTTP PATCH enforces ownership, validation, phone, and concurrent email conflicts', async () => {
+            const app = (await import('../../src/app.js')).default;
+            const jwt = (await import('jsonwebtoken')).default;
+            const server = app.listen(0, '127.0.0.1');
+            await new Promise<void>(resolve => server.once('listening', resolve));
+            const address = server.address();
+            assert.ok(address && typeof address !== 'string');
+            const endpoint = `http://127.0.0.1:${address.port}/api/auth/current-user`;
+            const accounts = await Promise.all((['candidate', 'employer'] as const).map(role => auth.registerUser({
+                firstName: 'Contact', lastName: 'Original', email: `contact-${role}@example.test`, password: 'password123', role,
+            })));
+            const headers = (user: typeof accounts[number]) => ({ Authorization: `Bearer ${jwt.sign({ sub: user.id, role: user.role }, process.env.JWT_ACCESS_SECRET!, { expiresIn: '15m' })}`, 'Content-Type': 'application/json' });
+            const patch = (user: typeof accounts[number], body: unknown) => fetch(endpoint, { method: 'PATCH', headers: headers(user), body: JSON.stringify(body) });
+            try {
+                assert.equal((await fetch(endpoint, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"firstName":"No"}' })).status, 401);
+                for (const user of accounts) {
+                    const changed = await patch(user, { firstName: ' Updated ', email: ` CONTACT-${user.role}@EXAMPLE.TEST `, phone: ' +44 (20) 7946-0958 ' });
+                    assert.equal(changed.status, 200);
+                    const body = await changed.json();
+                    assert.equal(body.user.firstName, 'Updated');
+                    assert.equal(body.user.lastName, 'Original');
+                    assert.equal(body.user.email, `contact-${user.role}@example.test`);
+                    assert.equal(body.user.phone, '+44 (20) 7946-0958');
+                    assert.equal(body.user.id, user.id);
+                    assert.equal(body.user.role, user.role);
+                    assert.equal('password_hash' in body.user || 'passwordHash' in body.user, false);
+                    assert.equal((await patch(user, { phone: '(415) 555-0123' })).status, 200);
+                    assert.equal((await fetch(endpoint, { headers: headers(user) }).then(r => r.json())).user.phone, '(415) 555-0123');
+                    assert.equal((await patch(user, { phone: null })).status, 200);
+                    assert.equal((await fetch(endpoint, { headers: headers(user) }).then(r => r.json())).user.phone, null);
+                    for (const forbidden of [{}, { id: accounts[1].id, firstName: 'Hijack' }, { userId: accounts[0].id }, { role: 'candidate' }, { password: 'new-password' }])
+                        assert.equal((await patch(user, forbidden)).status, 400);
+                    assert.equal((await fetch(`${endpoint}/${accounts[1].id}`, { method: 'PATCH', headers: headers(user), body: '{"firstName":"Hijack"}' })).status, 404);
+                }
+                const beforeOther = await auth.getCurrentUser(accounts[1].id);
+                await patch(accounts[0], { lastName: 'Self only' });
+                assert.deepEqual(await auth.getCurrentUser(accounts[1].id), beforeOther);
+                const races = await Promise.all(accounts.map(user => patch(user, { email: ' SHARED-CONTACT@EXAMPLE.TEST ' })));
+                assert.deepEqual(races.map(response => response.status).sort(), [200, 409]);
+                const conflict = await races.find(response => response.status === 409)!.json();
+                assert.equal(conflict.code, 'EMAIL_ALREADY_EXISTS');
+                assert.ok(conflict.errors.email.length);
+                assert.equal((await db.query("SELECT COUNT(*)::int AS n FROM users WHERE LOWER(email) = 'shared-contact@example.test'")).rows[0].n, 1);
+            } finally {
+                await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+            }
+        });
         await t.test('duplicate registration is a business conflict even under concurrency', async () => {
             const input = { firstName: 'Race', lastName: 'Test', email: 'race@example.test', password: 'password123', role: 'candidate' as const };
             const results = await Promise.allSettled([auth.registerUser(input), auth.registerUser(input)]);
